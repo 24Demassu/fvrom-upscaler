@@ -108,15 +108,24 @@ def main():
     print(f"wrote {out / 'README.md'}")
 
     if a.upload:
-        token = os.environ.get("HF_TOKEN")
+        token = (os.environ.get("HF_TOKEN") or "").strip().strip('"').strip("'")
         if not token:
-            sys.exit("--upload needs the HF_TOKEN environment variable (a token with write access)")
+            sys.exit("--upload needs the HF_TOKEN environment variable (a token with write access).")
+        # Catch placeholder text before it reaches the network. The value is never printed.
+        if not token.startswith("hf_") or len(token) < 20 or any(c.isspace() for c in token):
+            sys.exit("HF_TOKEN does not look like a Hugging Face token (a real one starts with 'hf_', is one word "
+                     "with no spaces, and is created at https://huggingface.co/settings/tokens with write access). "
+                     "Did you leave placeholder text in it? Nothing was uploaded.")
         from huggingface_hub import HfApi
 
-        api = HfApi(token=token)
-        api.create_repo(a.repo, repo_type="model", exist_ok=True)
-        api.upload_folder(folder_path=str(out), repo_id=a.repo, repo_type="model",
-                          commit_message="Add dat.safetensors (converted copy of 4xNomos8kDAT)")
+        try:
+            api = HfApi(token=token)
+            api.create_repo(a.repo, repo_type="model", exist_ok=True)
+            api.upload_folder(folder_path=str(out), repo_id=a.repo, repo_type="model",
+                              commit_message="Add dat.safetensors (converted copy of 4xNomos8kDAT)")
+        except Exception as e:  # print only the error type: messages can echo request headers
+            sys.exit(f"Upload failed ({type(e).__name__}). Check that the token is valid, has write access, "
+                     "and that you are online. Nothing about the token was printed.")
         print(f"uploaded: https://huggingface.co/{a.repo}")
     else:
         print("not uploaded (add --upload with HF_TOKEN set to publish)")
