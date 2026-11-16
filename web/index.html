@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Image Upscaler</title>
+<meta name="description" content="Free 4x image upscaler that runs in your browser. Your image never leaves your device.">
+<style>
+  :root {
+    --bg: #f6f6f4; --card: #ffffff; --ink: #1c1c1a; --muted: #6b6b66; --line: #dcdcd6;
+    --accent: #4f46e5; --accent-ink: #ffffff; --ok: #1a7f4b; --warn: #a15c00; --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413; --card: #1e1e1c; --ink: #ecece8; --muted: #9a9a93; --line: #34342f;
+      --accent: #8b85ff; --accent-ink: #12122a; --ok: #5fd19a; --warn: #f0b45a; --err: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { color-scheme: light dark; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 28px; line-height: 1.2; margin: 0 0 6px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  #drop {
+    display: block; border: 2px dashed var(--line); border-radius: 14px; background: var(--card);
+    padding: 36px 16px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  #drop:hover, #drop.over, #drop:focus-within { border-color: var(--accent); }
+  #drop strong { display: block; font-size: 18px; margin-bottom: 4px; }
+  #drop span { color: var(--muted); font-size: 14px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; margin: 16px 0; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--card); }
+  .seg label { padding: 8px 18px; cursor: pointer; font-weight: 600; font-size: 15px; }
+  .seg input { position: absolute; opacity: 0; pointer-events: none; }
+  .seg label:has(input:checked) { background: var(--accent); color: var(--accent-ink); }
+  .seg label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .seg label:has(input:disabled) { opacity: .45; cursor: not-allowed; }
+  button, .btn {
+    font: inherit; font-weight: 600; border: 0; border-radius: 10px; padding: 10px 18px; cursor: pointer;
+    background: var(--accent); color: var(--accent-ink); text-decoration: none; display: inline-block;
+  }
+  button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  button:disabled, .btn.disabled { opacity: .5; cursor: default; pointer-events: none; }
+  #status { min-height: 1.5em; margin: 8px 0; color: var(--muted); font-size: 15px; }
+  #status.ok { color: var(--ok); } #status.warn { color: var(--warn); } #status.err { color: var(--err); }
+  progress { width: 100%; height: 8px; accent-color: var(--accent); }
+  #progressWrap[hidden], #result[hidden], #fitRow[hidden] { display: none; }
+  #stage {
+    position: relative; width: 100%; border-radius: 12px; overflow: hidden; border: 1px solid var(--line);
+    background: repeating-conic-gradient(#8884 0% 25%, transparent 0% 50%) 0 0 / 20px 20px;
+    user-select: none; touch-action: pan-y;
+  }
+  #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #beforeCanvas { clip-path: inset(0 50% 0 0); }
+  #divider { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #fff; box-shadow: 0 0 0 1px #0006; pointer-events: none; }
+  .tag { position: absolute; top: 10px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #000a; color: #fff; pointer-events: none; }
+  #tagBefore { left: 10px; } #tagAfter { right: 10px; }
+  #slider { width: 100%; margin: 10px 0 0; accent-color: var(--accent); }
+  footer { margin-top: 36px; color: var(--muted); font-size: 13px; }
+  footer a { color: inherit; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.webgpu.min.js"></script>
+</head>
+<body>
+<main>
+  <h1>Image Upscaler</h1>
+  <p class="sub">Make a photo 4&times; sharper. It runs on your own device, so your image is never uploaded.</p>
+
+  <label id="drop" tabindex="-1">
+    <input type="file" id="file" accept="image/*" hidden>
+    <strong>Drop an image here, or click to choose</strong>
+    <span>JPG, PNG or WebP. Upscaling starts as soon as you pick a file.</span>
+  </label>
+
+  <div class="row">
+    <div class="seg" role="radiogroup" aria-label="Output size">
+      <label><input type="radio" name="scale" value="4" checked> 4&times;</label>
+      <label><input type="radio" name="scale" value="2"> 2&times;</label>
+    </div>
+    <div class="seg" role="radiogroup" aria-label="Quality">
+      <label><input type="radio" name="quality" value="fast" checked> Fast</label>
+      <label id="detailedLabel"><input type="radio" name="quality" value="detailed" id="detailedRadio" disabled> Detailed</label>
+    </div>
+  </div>
+  <div class="row" style="margin-top:-6px"><span id="backendNote" style="color:var(--muted);font-size:14px"></span></div>
+
+  <div id="status" role="status" aria-live="polite"></div>
+  <div id="fitRow" hidden class="row"><button id="fitBtn">Shrink to fit and upscale</button></div>
+  <div id="progressWrap" hidden>
+    <progress id="bar" value="0" max="1"></progress>
+    <div class="row"><button id="cancelBtn" class="secondary">Cancel</button></div>
+  </div>
+
+  <section id="result" hidden>
+    <div id="stage">
+      <canvas id="afterCanvas"></canvas>
+      <canvas id="beforeCanvas"></canvas>
+      <div id="divider"></div>
+      <span class="tag" id="tagBefore">Before</span><span class="tag" id="tagAfter">After</span>
+    </div>
+    <input type="range" id="slider" min="0" max="100" value="50" aria-label="Before and after comparison">
+    <div class="row"><a class="btn" id="download" download>Download full resolution (PNG)</a></div>
+  </section>
+
+  <footer>
+    Models: Real-ESRGAN <code>realesr-general-x4v3</code> (Fast) and <code>RealESRGAN_x4plus</code> (Detailed),
+    both BSD-3-Clause, run with ONNX Runtime Web.
+    Nothing is sent to a server; the model file is downloaded once to your browser.
+  </footer>
+</main>
+
+<script>
+"use strict";
+const ORT_BASE = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/";
+const QUERY = new URLSearchParams(location.search); // ?tile=&pad=&model= are tuning knobs for testing
+const MODEL_SCALE = 4;
+const TILE = +QUERY.get("tile") || 192, PAD = +QUERY.get("pad") || 16, IN = TILE + 2 * PAD; // the model always sees IN x IN tiles
+// Quality modes. maxPixels is the input size limit per backend: the output is 16x this many pixels
+// (canvas memory), and the CPU fallback is about 15 s per 192-pixel tile, so it only gets small images.
+// Detailed (Real-ESRGAN x4plus, 17M parameters) is much heavier, so it needs WebGPU with fp16 and gets a lower limit.
+const QUALITIES = {
+  fast: { label: "Fast", mb: 5, maxPixels: { webgpu: 2.1e6, wasm: 0.1e6 } },
+  detailed: { label: "Detailed", mb: 34, maxPixels: { webgpu: 0.4e6 } }, // measured about 2.9 s per tile on an integrated GPU: 0.4 MP is about 16 tiles, 47 s
+};
+
+const $ = (id) => document.getElementById(id);
+const els = {
+  drop: $("drop"), file: $("file"), status: $("status"), bar: $("bar"), progressWrap: $("progressWrap"),
+  cancel: $("cancelBtn"), result: $("result"), after: $("afterCanvas"), before: $("beforeCanvas"),
+  stage: $("stage"), divider: $("divider"), slider: $("slider"), download: $("download"),
+  fitRow: $("fitRow"), fitBtn: $("fitBtn"), backendNote: $("backendNote"),
+};
+
+let backend = null;        // "webgpu" | "wasm"
+let hasF16 = false;        // GPU supports half-precision shaders (about 4x faster here)
+const modelNames = {};     // quality -> which ONNX file is loaded
+const sessions = {};       // quality -> promise of an ONNX session
+let busy = false, cancelled = false;
+let current = null;        // { name, bitmap, cache: { quality -> 4x canvas }, quality }
+let pendingFit = null;     // image waiting for the "shrink to fit" button
+const getQuality = () => document.querySelector('input[name="quality"]:checked').value;
+
+function setStatus(text, kind = "") { els.status.textContent = text; els.status.className = kind; }
+// Yield to the browser so the progress bar repaints. A timer, not requestAnimationFrame:
+// rAF is paused in background tabs, which would stall a long upscale if the user switches tabs.
+const nextFrame = () => new Promise((r) => setTimeout(r, 0));
+const getScale = () => Number(document.querySelector('input[name="scale"]:checked').value);
+
+async function detectBackend() {
+  if (backend) return backend;
+  backend = "wasm";
+  try {
+    const adapter = QUERY.get("backend") !== "wasm" && navigator.gpu && (await navigator.gpu.requestAdapter());
+    if (adapter) { backend = "webgpu"; hasF16 = adapter.features.has("shader-f16"); }
+  } catch (_) { /* fall back to wasm */ }
+  return backend;
+}
+
+async function getSession(quality) {
+  if (sessions[quality]) return sessions[quality];
+  sessions[quality] = (async () => {
+    ort.env.wasm.wasmPaths = ORT_BASE;
+    ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
+    await detectBackend();
+    const make = (name, ep) => ort.InferenceSession.create(`model/${name}.onnx`, {
+      executionProviders: [ep], graphOptimizationLevel: "all", freeDimensionOverrides: { h: IN, w: IN },
+    });
+    const attempts = [];
+    if (quality === "detailed") {
+      // Only the fp16 file is shipped (the fp32 one is 67 MB), so this needs WebGPU with shader-f16.
+      if (backend !== "webgpu" || !hasF16) throw new Error("Detailed mode needs a GPU with WebGPU half-precision support.");
+      attempts.push(["photo_fp16", "webgpu"]);
+    } else {
+      // Best first: half-precision on the GPU, then full precision on the GPU, then the CPU.
+      if (backend === "webgpu" && hasF16) attempts.push(["general_fp16", "webgpu"]);
+      if (backend === "webgpu") attempts.push(["general", "webgpu"]);
+      attempts.push(["general", "wasm"]);
+    }
+    if (QUERY.get("model")) attempts.unshift([QUERY.get("model"), backend]); // testing override
+    let lastError;
+    for (const [name, ep] of attempts) {
+      try {
+        const session = await make(name, ep);
+        if (quality === "fast") backend = ep;
+        modelNames[quality] = name;
+        return session;
+      } catch (e) {
+        console.warn(`Could not start ${name} on ${ep}`, e);
+        lastError = e;
+      }
+    }
+    throw lastError;
+  })();
+  sessions[quality].catch(() => { delete sessions[quality]; });
+  return sessions[quality];
+}
+
+function reflect(i, n) {
+  if (n === 1) return 0;
+  const p = 2 * (n - 1);
+  i = ((i % p) + p) % p;
+  return i < n ? i : p - i;
+}
+
+function bitmapToCanvas(bitmap, w = bitmap.width, h = bitmap.height) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  return c;
+}
+
+// Upscale `bitmap` 4x tile by tile. Returns a canvas of (w*4, h*4).
+async function upscale4x(bitmap, session, onProgress) {
+  const w = bitmap.width, h = bitmap.height, S = MODEL_SCALE;
+  const srcCanvas = bitmapToCanvas(bitmap);
+  const src = srcCanvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  let hasAlpha = false;
+  for (let i = 3; i < src.length; i += 4) if (src[i] < 255) { hasAlpha = true; break; }
+
+  const full = document.createElement("canvas");
+  full.width = w * S; full.height = h * S;
+  const fctx = full.getContext("2d");
+  const tilesX = Math.ceil(w / TILE), tilesY = Math.ceil(h / TILE), total = tilesX * tilesY;
+  const input = new Float32Array(3 * IN * IN), plane = IN * IN, OW = IN * S;
+  const xs = new Int32Array(IN);
+  let done = 0;
+
+  for (let ty = 0; ty < tilesY; ty++) {
+    for (let tx = 0; tx < tilesX; tx++) {
+      if (cancelled) throw new Error("cancelled");
+      const x0 = tx * TILE, y0 = ty * TILE;
+      for (let xx = 0; xx < IN; xx++) xs[xx] = reflect(x0 - PAD + xx, w);
+      for (let yy = 0; yy < IN; yy++) {
+        const row = reflect(y0 - PAD + yy, h) * w;
+        for (let xx = 0; xx < IN; xx++) {
+          const si = (row + xs[xx]) * 4, di = yy * IN + xx;
+          input[di] = src[si] / 255; input[plane + di] = src[si + 1] / 255; input[2 * plane + di] = src[si + 2] / 255;
+        }
+      }
+      const res = await session.run({ input: new ort.Tensor("float32", input, [1, 3, IN, IN]) });
+      const o = res.output.data, oplane = OW * OW;
+      const cw = Math.min(TILE, w - x0), ch = Math.min(TILE, h - y0);
+      const tile = new ImageData(cw * S, ch * S), td = tile.data;
+      for (let y = 0; y < ch * S; y++) {
+        const orow = (PAD * S + y) * OW + PAD * S;
+        for (let x = 0; x < cw * S; x++) {
+          const oi = orow + x, di = (y * cw * S + x) * 4;
+          td[di] = o[oi] * 255; td[di + 1] = o[oplane + oi] * 255; td[di + 2] = o[2 * oplane + oi] * 255; td[di + 3] = 255;
+        }
+      }
+      fctx.putImageData(tile, x0 * S, y0 * S);
+      res.output.dispose?.();
+      onProgress(++done, total);
+      if (done % 2 === 0) await nextFrame();
+    }
+  }
+  if (hasAlpha) { // keep transparency: scale the original alpha smoothly and mask the result with it
+    fctx.globalCompositeOperation = "destination-in";
+    fctx.imageSmoothingQuality = "high";
+    fctx.drawImage(srcCanvas, 0, 0, w * S, h * S);
+    fctx.globalCompositeOperation = "source-over";
+  }
+  return full;
+}
+
+function showResult() {
+  if (!current) return;
+  const scale = getScale(), { bitmap, name } = current, full4 = current.cache[current.quality];
+  if (!full4) return;
+  const w = bitmap.width * scale, h = bitmap.height * scale;
+  let out = full4;
+  if (scale !== MODEL_SCALE) {
+    out = document.createElement("canvas");
+    out.width = w; out.height = h;
+    const ctx = out.getContext("2d");
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(full4, 0, 0, w, h);
+  }
+  els.after.width = out.width; els.after.height = out.height;
+  els.after.getContext("2d").drawImage(out, 0, 0);
+  els.before.width = bitmap.width; els.before.height = bitmap.height;
+  els.before.getContext("2d").drawImage(bitmap, 0, 0);
+  els.stage.style.aspectRatio = `${w} / ${h}`;
+  els.result.hidden = false;
+  // The PNG is encoded in the background; keep the button greyed out until it is ready.
+  if (els.download.href.startsWith("blob:")) URL.revokeObjectURL(els.download.href);
+  els.download.removeAttribute("href");
+  els.download.classList.add("disabled");
+  out.toBlob((blob) => {
+    if (!current || current.cache[current.quality] !== full4 || getScale() !== scale) return;
+    els.download.href = URL.createObjectURL(blob);
+    els.download.download = `${name}-${current.quality === "detailed" ? "detailed-" : ""}${scale}x.png`;
+    els.download.classList.remove("disabled");
+  }, "image/png");
+}
+
+function setSlider(v) {
+  els.before.style.clipPath = `inset(0 ${100 - v}% 0 0)`;
+  els.divider.style.left = `${v}%`;
+}
+
+function setBusy(b) {
+  busy = b;
+  els.progressWrap.hidden = !b;
+  els.file.disabled = b;
+  document.querySelectorAll('input[name="quality"]').forEach((r) => {
+    r.disabled = b || (r.value === "detailed" && !detailedOk());
+  });
+}
+
+const detailedOk = () => backend === "webgpu" && hasF16;
+
+async function process(bitmap, name) {
+  const quality = getQuality(), cfg = QUALITIES[quality];
+  // Keep results already computed for this same image, so switching Fast/Detailed back and forth is free.
+  const cache = current && current.bitmap === bitmap ? current.cache : {};
+  setBusy(true); cancelled = false; pendingFit = null; els.fitRow.hidden = true;
+  els.bar.removeAttribute("value");
+  try {
+    if (!cache[quality]) {
+      setStatus(`Loading the ${cfg.label} model (first time only, about ${cfg.mb} MB)...`);
+      const session = await getSession(quality);
+      els.backendNote.textContent = backend === "webgpu" ? "Using your graphics card (WebGPU)" : "No WebGPU here: using the CPU, which is much slower";
+      const limit = cfg.maxPixels[backend], px = bitmap.width * bitmap.height;
+      if (px > limit) {
+        pendingFit = { bitmap, name, limit };
+        setStatus(`This image is ${(px / 1e6).toFixed(1)} megapixels; the ${cfg.label} limit on this device is ${(limit / 1e6).toFixed(1)}. ` +
+          "Shrink it first, choose a smaller image" + (quality === "detailed" ? ", or switch to Fast" : "") + ".", "warn");
+        els.fitRow.hidden = false;
+        return;
+      }
+      const t0 = performance.now();
+      els.bar.value = 0;
+      cache[quality] = await upscale4x(bitmap, session, (d, t) => {
+        els.bar.value = d / t;
+        setStatus(`Upscaling (${cfg.label})... part ${d} of ${t}`);
+      });
+      const secs = (performance.now() - t0) / 1000;
+      window.lastRun = { backend, quality, model: modelNames[quality], seconds: secs, inW: bitmap.width, inH: bitmap.height };
+      setStatus(`Done in ${secs.toFixed(1)} s. ${bitmap.width}×${bitmap.height} → ${bitmap.width * getScale()}×${bitmap.height * getScale()}.`, "ok");
+    } else {
+      setStatus(`Showing the ${cfg.label} result.`, "ok");
+      window.lastRun = { backend, quality, model: modelNames[quality], seconds: 0, cached: true, inW: bitmap.width, inH: bitmap.height };
+    }
+    current = { name, bitmap, cache, quality };
+    showResult();
+    setSlider(50); els.slider.value = 50;
+  } catch (e) {
+    if (e.message === "cancelled") setStatus("Cancelled.");
+    else {
+      console.error(e); setStatus("Something went wrong: " + (e.message || e), "err");
+      if (quality === "detailed") document.querySelector('input[name="quality"][value="fast"]').checked = true;
+    }
+    if (current) { // keep showing the last good result, and keep the radio in line with it
+      document.querySelector(`input[name="quality"][value="${current.quality}"]`).checked = true;
+    }
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function handleFile(file) {
+  if (!file || busy) return;
+  if (!file.type.startsWith("image/")) { setStatus("That file is not an image.", "err"); return; }
+  setStatus("Reading the image...");
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    await process(bitmap, file.name.replace(/\.[^.]+$/, "") || "image");
+  } catch (e) {
+    setStatus("Could not open that image.", "err");
+  }
+}
+
+els.file.addEventListener("change", () => { handleFile(els.file.files[0]); els.file.value = ""; });
+["dragenter", "dragover"].forEach((t) => els.drop.addEventListener(t, (e) => { e.preventDefault(); els.drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) => els.drop.addEventListener(t, (e) => { e.preventDefault(); els.drop.classList.remove("over"); }));
+els.drop.addEventListener("drop", (e) => handleFile(e.dataTransfer.files[0]));
+els.cancel.addEventListener("click", () => { cancelled = true; });
+els.slider.addEventListener("input", () => setSlider(els.slider.value));
+document.querySelectorAll('input[name="scale"]').forEach((r) => r.addEventListener("change", showResult));
+document.querySelectorAll('input[name="quality"]').forEach((r) => r.addEventListener("change", () => {
+  if (!busy && (current || pendingFit)) { const src = pendingFit || current; process(src.bitmap, src.name); }
+}));
+els.fitBtn.addEventListener("click", async () => {
+  if (!pendingFit || busy) return;
+  const { bitmap, name, limit } = pendingFit, k = Math.sqrt(limit / (bitmap.width * bitmap.height));
+  const small = await createImageBitmap(bitmap, { resizeWidth: Math.floor(bitmap.width * k), resizeHeight: Math.floor(bitmap.height * k), resizeQuality: "high" });
+  process(small, name);
+});
+// Allow dragging an image onto the page, not only the drop box.
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => { e.preventDefault(); if (!els.drop.contains(e.target)) handleFile(e.dataTransfer.files[0]); });
+
+detectBackend().then((b) => {
+  const ok = detailedOk();
+  document.getElementById("detailedRadio").disabled = !ok;
+  document.getElementById("detailedLabel").title = ok
+    ? "Sharper, more natural texture. Slower, and downloads a 34 MB model the first time."
+    : "Needs a browser and GPU with WebGPU half-precision support.";
+  els.backendNote.textContent = b === "webgpu"
+    ? (ok ? "Your browser supports WebGPU. Detailed mode is slower but gives more natural texture." : "Your browser supports WebGPU. Detailed mode needs half-precision GPU support, which this device lacks.")
+    : "WebGPU not available in this browser: slow CPU mode, Fast only";
+});
+
+window.__upscale = async (blob, name = "test") => { // test hook
+  process(await createImageBitmap(blob, { imageOrientation: "from-image" }), name);
+};
+</script>
+</body>
+</html>

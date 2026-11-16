@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+# downloaded original weights and local test material: never committed
+server/weights/
+*.pth
+_test/
+web/_test/
