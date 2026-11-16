@@ -36,11 +36,15 @@ future model, especially transformer-based ones, fp16 must be re-checked against
 | 576x576 | Detailed, fp16, warm | 9 | 28.4 s |
 | 771x777 (0.6 MP) to 3084x3108 | Detailed, fp16 | 25 | 71.9 s |
 | 1673x1254 (2.1 MP) to 6692x5016 | Fast, fp16 | 63 | 14.9 s |
+| 384x384 | Natural (RealPLKSR), fp16, cold | 4 | 76.8 s |
+| 384x384 | Natural (RealPLKSR), fp16, warm | 4 | 74.9 s |
 | 128x128 | Fast, fp32, CPU (WASM, single thread) | 1 | 14.7 s |
 
 Detailed costs about 2.9 s per tile and Fast about 0.2 to 0.4 s per tile here, so Detailed is roughly
-13x slower. Tile count rounds up, so time depends more on tile count than on megapixels. The Detailed
-input limit is set to 0.4 MP (about 16 tiles) for that reason.
+13x slower. Natural costs about 18.7 s per tile, about 6.5x slower than Detailed even though it is about
+30% faster on the CPU; the cause is not understood. Tile count rounds up, so time depends more on tile
+count than on megapixels. That is why the Detailed limit is 0.4 MP or 20 tiles and the Natural limit is
+4 tiles (about 380x380 pixels).
 
 ## Not measured
 

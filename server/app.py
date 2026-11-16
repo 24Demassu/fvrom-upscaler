@@ -18,9 +18,10 @@ except ImportError:  # any other machine: nothing to do
 MAX_INPUT_PIXELS = int(os.environ.get("MAX_INPUT_PIXELS", "2100000"))  # ~1920x1080
 PREVIEW_SIDE = 2048  # the before/after slider shows a smaller copy; the download is full size
 
-core.preload()  # load weights onto the CPU at start-up, not on the first visitor's quota
+AVAILABLE = core.preload()  # load weights onto the CPU at start-up, not on the first visitor's quota
 
-CHOICES = [(label, key) for key, (label, _) in core.MODELS.items()]
+# only offer the models whose weights actually loaded (the DAT model needs the Hugging Face repo)
+CHOICES = [(label, key) for key, (label, _) in core.MODELS.items() if key in AVAILABLE]
 
 
 @gpu

@@ -84,6 +84,7 @@
     <div class="seg" role="radiogroup" aria-label="Quality">
       <label><input type="radio" name="quality" value="fast" checked> Fast</label>
       <label id="detailedLabel"><input type="radio" name="quality" value="detailed" id="detailedRadio" disabled> Detailed</label>
+      <label id="naturalLabel"><input type="radio" name="quality" value="natural" id="naturalRadio" disabled> Natural</label>
     </div>
   </div>
   <div class="row" style="margin-top:-6px"><span id="backendNote" style="color:var(--muted);font-size:14px"></span></div>
@@ -108,8 +109,12 @@
 
   <footer>
     Models: Real-ESRGAN <code>realesr-general-x4v3</code> (Fast) and <code>RealESRGAN_x4plus</code> (Detailed),
-    both BSD-3-Clause, run with ONNX Runtime Web.
+    both BSD-3-Clause; <code>4xNomosWebPhoto_RealPLKSR</code> (Natural) by Philip Hofmann,
+    <a href="https://creativecommons.org/licenses/by/4.0/">CC-BY-4.0</a>, converted to ONNX
+    (<a href="https://github.com/Phhofm/models/releases/tag/4xNomosWebPhoto_RealPLKSR">source</a>).
+    Run with ONNX Runtime Web.
     Nothing is sent to a server; the model file is downloaded once to your browser.
+    <a href="https://github.com/24Demassu/fvrom-upscaler">Source code</a>.
   </footer>
 </main>
 
@@ -121,11 +126,39 @@ const MODEL_SCALE = 4;
 const TILE = +QUERY.get("tile") || 192, PAD = +QUERY.get("pad") || 16, IN = TILE + 2 * PAD; // the model always sees IN x IN tiles
 // Quality modes. maxPixels is the input size limit per backend: the output is 16x this many pixels
 // (canvas memory), and the CPU fallback is about 15 s per 192-pixel tile, so it only gets small images.
-// Detailed (Real-ESRGAN x4plus, 17M parameters) is much heavier, so it needs WebGPU with fp16 and gets a lower limit.
+// maxTiles caps the work for the slow models. Time is proportional to the tile count, which rounds up,
+// so it is a better limit than pixels. Models with a `file` ship only as fp16 and need WebGPU with shader-f16.
+// Measured on an Intel integrated GPU: Fast ~0.2-0.4 s/tile, Detailed ~2.9 s/tile, Natural ~18.7 s/tile.
 const QUALITIES = {
   fast: { label: "Fast", mb: 5, maxPixels: { webgpu: 2.1e6, wasm: 0.1e6 } },
-  detailed: { label: "Detailed", mb: 34, maxPixels: { webgpu: 0.4e6 } }, // measured about 2.9 s per tile on an integrated GPU: 0.4 MP is about 16 tiles, 47 s
+  detailed: {
+    label: "Detailed", mb: 34, file: "photo_fp16", maxPixels: { webgpu: 0.4e6 }, maxTiles: { webgpu: 20 },
+    hint: "Real-ESRGAN x4plus. Sharper, more natural texture. About 13x slower than Fast on integrated graphics; downloads 34 MB the first time.",
+  },
+  natural: {
+    label: "Natural", mb: 15, file: "realplksr_fp16", maxPixels: { webgpu: 0.15e6 }, maxTiles: { webgpu: 4 },
+    hint: "Nomos RealPLKSR, trained on noisy real photos (fur, grain, JPEG damage). Very slow on integrated graphics (about 19 s per tile); not tested on dedicated GPUs. Downloads 15 MB the first time.",
+  },
 };
+
+const tileCount = (w, h) => Math.ceil(w / TILE) * Math.ceil(h / TILE);
+// Which limit does an image exceed for this mode on this backend? Returns a description, or null if it fits.
+function exceeds(cfg, w, h) {
+  const px = cfg.maxPixels[backend], tiles = cfg.maxTiles && cfg.maxTiles[backend];
+  if (w * h > px) return `${(px / 1e6).toFixed(2)} megapixels`;
+  if (tiles && tileCount(w, h) > tiles) return `${tiles} tiles (about ${Math.round(Math.sqrt(tiles) * TILE)}×${Math.round(Math.sqrt(tiles) * TILE)} pixels)`;
+  return null;
+}
+// Shrink (w, h) in small steps until it fits this mode's limits.
+function fitSize(cfg, w, h) {
+  let k = Math.sqrt(cfg.maxPixels[backend] / (w * h));
+  k = Math.min(k, 1);
+  for (let i = 0; i < 200; i++, k *= 0.97) {
+    const nw = Math.max(1, Math.floor(w * k)), nh = Math.max(1, Math.floor(h * k));
+    if (!exceeds(cfg, nw, nh)) return [nw, nh];
+  }
+  return [Math.max(1, Math.floor(w * k)), Math.max(1, Math.floor(h * k))];
+}
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -169,11 +202,11 @@ async function getSession(quality) {
     const make = (name, ep) => ort.InferenceSession.create(`model/${name}.onnx`, {
       executionProviders: [ep], graphOptimizationLevel: "all", freeDimensionOverrides: { h: IN, w: IN },
     });
-    const attempts = [];
-    if (quality === "detailed") {
-      // Only the fp16 file is shipped (the fp32 one is 67 MB), so this needs WebGPU with shader-f16.
-      if (backend !== "webgpu" || !hasF16) throw new Error("Detailed mode needs a GPU with WebGPU half-precision support.");
-      attempts.push(["photo_fp16", "webgpu"]);
+    const attempts = [], cfg = QUALITIES[quality];
+    if (cfg.file) {
+      // Only the fp16 file is shipped (the fp32 ones are 2x the size), so this needs WebGPU with shader-f16.
+      if (backend !== "webgpu" || !hasF16) throw new Error(`${cfg.label} mode needs a GPU with WebGPU half-precision support.`);
+      attempts.push([cfg.file, "webgpu"]);
     } else {
       // Best first: half-precision on the GPU, then full precision on the GPU, then the CPU.
       if (backend === "webgpu" && hasF16) attempts.push(["general_fp16", "webgpu"]);
@@ -295,7 +328,7 @@ function showResult() {
   out.toBlob((blob) => {
     if (!current || current.cache[current.quality] !== full4 || getScale() !== scale) return;
     els.download.href = URL.createObjectURL(blob);
-    els.download.download = `${name}-${current.quality === "detailed" ? "detailed-" : ""}${scale}x.png`;
+    els.download.download = `${name}-${current.quality === "fast" ? "" : current.quality + "-"}${scale}x.png`;
     els.download.classList.remove("disabled");
   }, "image/png");
 }
@@ -310,11 +343,12 @@ function setBusy(b) {
   els.progressWrap.hidden = !b;
   els.file.disabled = b;
   document.querySelectorAll('input[name="quality"]').forEach((r) => {
-    r.disabled = b || (r.value === "detailed" && !detailedOk());
+    r.disabled = b || (r.value !== "fast" && !heavyOk());
   });
 }
 
-const detailedOk = () => backend === "webgpu" && hasF16;
+// The Detailed and Natural models ship only as fp16, so they need WebGPU with half-precision shaders.
+const heavyOk = () => backend === "webgpu" && hasF16;
 
 async function process(bitmap, name) {
   const quality = getQuality(), cfg = QUALITIES[quality];
@@ -324,17 +358,20 @@ async function process(bitmap, name) {
   els.bar.removeAttribute("value");
   try {
     if (!cache[quality]) {
-      setStatus(`Loading the ${cfg.label} model (first time only, about ${cfg.mb} MB)...`);
-      const session = await getSession(quality);
-      els.backendNote.textContent = backend === "webgpu" ? "Using your graphics card (WebGPU)" : "No WebGPU here: using the CPU, which is much slower";
-      const limit = cfg.maxPixels[backend], px = bitmap.width * bitmap.height;
-      if (px > limit) {
-        pendingFit = { bitmap, name, limit };
-        setStatus(`This image is ${(px / 1e6).toFixed(1)} megapixels; the ${cfg.label} limit on this device is ${(limit / 1e6).toFixed(1)}. ` +
-          "Shrink it first, choose a smaller image" + (quality === "detailed" ? ", or switch to Fast" : "") + ".", "warn");
+      await detectBackend();
+      // Check the size limit BEFORE downloading and compiling a 15-34 MB model for an image that cannot run.
+      const over = exceeds(cfg, bitmap.width, bitmap.height);
+      if (over) {
+        pendingFit = { bitmap, name };
+        setStatus(`This image is ${(bitmap.width * bitmap.height / 1e6).toFixed(2)} megapixels (${tileCount(bitmap.width, bitmap.height)} tiles); ` +
+          `the ${cfg.label} limit on this device is ${over}. Shrink it first, choose a smaller image` +
+          (quality !== "fast" ? ", or switch to Fast" : "") + ".", "warn");
         els.fitRow.hidden = false;
         return;
       }
+      setStatus(`Loading the ${cfg.label} model (first time only, about ${cfg.mb} MB)...`);
+      const session = await getSession(quality);
+      els.backendNote.textContent = backend === "webgpu" ? "Using your graphics card (WebGPU)" : "No WebGPU here: using the CPU, which is much slower";
       const t0 = performance.now();
       els.bar.value = 0;
       cache[quality] = await upscale4x(bitmap, session, (d, t) => {
@@ -355,7 +392,7 @@ async function process(bitmap, name) {
     if (e.message === "cancelled") setStatus("Cancelled.");
     else {
       console.error(e); setStatus("Something went wrong: " + (e.message || e), "err");
-      if (quality === "detailed") document.querySelector('input[name="quality"][value="fast"]').checked = true;
+      if (quality !== "fast") document.querySelector('input[name="quality"][value="fast"]').checked = true;
     }
     if (current) { // keep showing the last good result, and keep the radio in line with it
       document.querySelector(`input[name="quality"][value="${current.quality}"]`).checked = true;
@@ -389,8 +426,8 @@ document.querySelectorAll('input[name="quality"]').forEach((r) => r.addEventList
 }));
 els.fitBtn.addEventListener("click", async () => {
   if (!pendingFit || busy) return;
-  const { bitmap, name, limit } = pendingFit, k = Math.sqrt(limit / (bitmap.width * bitmap.height));
-  const small = await createImageBitmap(bitmap, { resizeWidth: Math.floor(bitmap.width * k), resizeHeight: Math.floor(bitmap.height * k), resizeQuality: "high" });
+  const { bitmap, name } = pendingFit, [nw, nh] = fitSize(QUALITIES[getQuality()], bitmap.width, bitmap.height);
+  const small = await createImageBitmap(bitmap, { resizeWidth: nw, resizeHeight: nh, resizeQuality: "high" });
   process(small, name);
 });
 // Allow dragging an image onto the page, not only the drop box.
@@ -398,13 +435,14 @@ window.addEventListener("dragover", (e) => e.preventDefault());
 window.addEventListener("drop", (e) => { e.preventDefault(); if (!els.drop.contains(e.target)) handleFile(e.dataTransfer.files[0]); });
 
 detectBackend().then((b) => {
-  const ok = detailedOk();
-  document.getElementById("detailedRadio").disabled = !ok;
-  document.getElementById("detailedLabel").title = ok
-    ? "Sharper, more natural texture. Slower, and downloads a 34 MB model the first time."
-    : "Needs a browser and GPU with WebGPU half-precision support.";
+  const ok = heavyOk();
+  for (const q of ["detailed", "natural"]) {
+    document.getElementById(q + "Radio").disabled = !ok;
+    document.getElementById(q + "Label").title = ok ? QUALITIES[q].hint : "Needs a browser and GPU with WebGPU half-precision support.";
+  }
   els.backendNote.textContent = b === "webgpu"
-    ? (ok ? "Your browser supports WebGPU. Detailed mode is slower but gives more natural texture." : "Your browser supports WebGPU. Detailed mode needs half-precision GPU support, which this device lacks.")
+    ? (ok ? "Your browser supports WebGPU. Detailed and Natural are slower but give more natural texture; hover them for details."
+          : "Your browser supports WebGPU, but this device lacks half-precision support, so only Fast is available.")
     : "WebGPU not available in this browser: slow CPU mode, Fast only";
 });
 

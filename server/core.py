@@ -6,9 +6,11 @@ or a plain CPU. Use it from Python or the command line:
     python core.py input.jpg output.png --model general --scale 4
 
 Weights are looked up in this order:
-  1. WEIGHTS_REPO (a Hugging Face model repo holding <id>.safetensors files; created by
-     deploy_space.py), if the environment variable is set;
-  2. the official Real-ESRGAN GitHub release files, downloaded once into WEIGHTS_DIR.
+  1. models listed in HF_FILES (the large Nomos DAT model) come from a public Hugging Face model repo;
+  2. WEIGHTS_REPO (a Hugging Face model repo holding <id>.safetensors files), if the environment
+     variable is set;
+  3. the original GitHub release files, downloaded once into WEIGHTS_DIR.
+A model whose weights cannot be fetched is skipped by preload() instead of stopping the app.
 """
 import argparse
 import os
@@ -24,20 +26,38 @@ WEIGHTS_DIR = Path(os.environ.get("WEIGHTS_DIR", Path(__file__).parent / "weight
 WEIGHTS_REPO = os.environ.get("WEIGHTS_REPO", "").strip()
 
 _REL = "https://github.com/xinntao/Real-ESRGAN/releases/download"
+_NOMOS = "https://github.com/Phhofm/models/releases/download"
 
-# id -> (label shown to users, GitHub file URL)
+# id -> (label shown to users, file URL or None when the model is hosted on Hugging Face)
 MODELS = {
     "general": ("Photo - fast (general-x4v3)", f"{_REL}/v0.2.5.0/realesr-general-x4v3.pth"),
     "photo": ("Photo - detailed (x4plus)", f"{_REL}/v0.1.0/RealESRGAN_x4plus.pth"),
+    # Nomos models by Philip Hofmann (CC-BY-4.0, see NOTICE.md), trained on noisy real photos
+    "natural": ("Photo - natural texture (Nomos RealPLKSR)", f"{_NOMOS}/4xNomosWebPhoto_RealPLKSR/4xNomosWebPhoto_RealPLKSR.pth"),
+    "dat": ("Photo - most faithful, heavy (Nomos DAT)", None),
     "anime": ("Anime / illustration (x4plus anime 6B)", f"{_REL}/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth"),
 }
 DEFAULT_MODEL = "general"
+
+# Large models served from a public Hugging Face model repo (a free account can host these).
+HF_MODELS_REPO = os.environ.get("HF_MODELS_REPO", "Demassu/fvrom-upscaler-models")
+HF_FILES = {"dat": (HF_MODELS_REPO, "dat.safetensors")}
+
+# Per-model tile size in input pixels (default 512). DAT is a transformer and needs far more memory per tile.
+TILES = {"dat": 128, "natural": 256}
+# DAT is kept out of half precision: transformer attention is the part most likely to misbehave in fp16.
+FP32_ONLY = {"dat"}
 
 _loaded = {}
 
 
 def weights_path(model_id):
     """Return a local path for the model weights, downloading them if needed."""
+    if model_id in HF_FILES:
+        from huggingface_hub import hf_hub_download
+
+        repo, filename = HF_FILES[model_id]
+        return hf_hub_download(repo, filename)
     if WEIGHTS_REPO:
         from huggingface_hub import hf_hub_download
 
@@ -64,17 +84,24 @@ def load_model(model_id):
 
 
 def preload():
+    """Load every model; return the ids that loaded. A model whose weights are unavailable is skipped."""
+    loaded = []
     for model_id in MODELS:
-        load_model(model_id)
+        try:
+            load_model(model_id)
+            loaded.append(model_id)
+        except Exception as e:  # missing file, offline, repo not uploaded yet
+            print(f"[upscaler] skipping {model_id}: {type(e).__name__}: {str(e)[:160]}", flush=True)
+    return loaded
 
 
 @torch.inference_mode()
-def _run_tiles(desc, rgb, device, tile, pad):
+def _run_tiles(desc, rgb, device, tile, pad, amp=True):
     """Upscale an RGB uint8 array tile by tile, so large images fit in GPU memory."""
     h, w, _ = rgb.shape
     s = desc.scale
     out = np.empty((h * s, w * s, 3), dtype=np.uint8)
-    use_amp = device.type == "cuda"
+    use_amp = amp and device.type == "cuda"
     for y0 in range(0, h, tile):
         for x0 in range(0, w, tile):
             y1, x1 = min(y0 + tile, h), min(x0 + tile, w)
@@ -91,8 +118,9 @@ def _run_tiles(desc, rgb, device, tile, pad):
     return out
 
 
-def upscale(img, model_id=DEFAULT_MODEL, scale=4, tile=512, pad=24):
-    """Upscale a PIL image. `scale` is the final factor (2 or 4)."""
+def upscale(img, model_id=DEFAULT_MODEL, scale=4, tile=None, pad=24):
+    """Upscale a PIL image. `scale` is the final factor (2 or 4). `tile` defaults per model (see TILES)."""
+    tile = tile or TILES.get(model_id, 512)
     img = ImageOps.exif_transpose(img)
     alpha = img.getchannel("A") if img.mode in ("RGBA", "LA") or "transparency" in img.info else None
     rgb = np.array(img.convert("RGB"))
@@ -102,7 +130,7 @@ def upscale(img, model_id=DEFAULT_MODEL, scale=4, tile=512, pad=24):
     try:
         while True:
             try:
-                out = _run_tiles(desc, rgb, device, tile, pad)
+                out = _run_tiles(desc, rgb, device, tile, pad, amp=model_id not in FP32_ONLY)
                 break
             except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
@@ -128,7 +156,7 @@ def main():
     p.add_argument("output")
     p.add_argument("--model", default=DEFAULT_MODEL, choices=list(MODELS))
     p.add_argument("--scale", type=int, default=4, choices=(2, 4))
-    p.add_argument("--tile", type=int, default=512)
+    p.add_argument("--tile", type=int, default=None, help="tile size in pixels (default depends on the model)")
     a = p.parse_args()
     t0 = time.time()
     res = upscale(Image.open(a.input), a.model, a.scale, a.tile)

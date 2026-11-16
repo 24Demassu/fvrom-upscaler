@@ -9,9 +9,25 @@ below are not covered by that license; they keep their own.
 | --- | --- | --- | --- |
 | `general.onnx`, `general_fp16.onnx` | Real-ESRGAN `realesr-general-x4v3`, converted to ONNX (and to half precision for the `_fp16` file) | [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN), release v0.2.5.0 | BSD-3-Clause (full text below) |
 | `photo_fp16.onnx` | Real-ESRGAN `RealESRGAN_x4plus`, converted to ONNX and to half precision | [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN), release v0.1.0 | BSD-3-Clause (full text below) |
+| `realplksr_fp16.onnx` | **4xNomosWebPhoto_RealPLKSR** by Philip Hofmann, converted to ONNX and to half precision | [Phhofm/models release](https://github.com/Phhofm/models/releases/tag/4xNomosWebPhoto_RealPLKSR) (also [OpenModelDB](https://openmodeldb.info/models/4x-NomosWebPhoto-RealPLKSR)) | [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/) (see the note below) |
 
 These files are modified copies: only the file format and number precision were changed, using
 `tools/export_onnx.py`. The network weights are the original authors' work.
+
+### Nomos models: attribution and a license note
+
+`4xNomosWebPhoto_RealPLKSR` was created by **Philip Hofmann** (GitHub: Phhofm; Helaman on OpenModelDB),
+trained on the Nomos-v2 dataset with neosr. OpenModelDB lists the license as **CC-BY-4.0**. The author's
+own release page reads "CC-BY-0.4", which is not an existing license version and appears to be a typo,
+and the author's repository states no license. We treat the model as CC-BY-4.0: we credit the author,
+link the source and license, and state that the file was converted (to ONNX and half precision). If the
+author prefers different terms or would like the file removed, please open an issue and it will be
+changed or removed.
+
+The same applies to `4xNomos8kDAT` (also by Philip Hofmann, CC-BY-4.0 on OpenModelDB, a fine-tune of the
+official DAT model by Zheng Chen et al., code under Apache-2.0, ICCV 2023). A converted copy for the
+server version is hosted on Hugging Face, prepared by `tools/publish_to_hf.py`; the model card there
+carries the same credits. The authors of the official DAT pretrained weights state no separate terms.
 
 ## Libraries
 
@@ -20,12 +36,6 @@ These files are modified copies: only the file format and number precision were 
 | [ONNX Runtime Web](https://github.com/microsoft/onnxruntime) | Runs the models in the browser. Loaded from the jsDelivr CDN at run time, not copied into this repository | MIT |
 | [spandrel](https://github.com/chaiNNer-org/spandrel) | Loads PyTorch model files in `tools/` and `server/` | MIT |
 | PyTorch, Gradio, ONNX, ONNX Runtime | Used by `tools/` and `server/` when you run them; not redistributed here | See each project |
-
-## Planned, not yet included
-
-Models from the Nomos family (for example `4xNomosWebPhoto_RealPLKSR` and `4xNomos8kDAT`, listed on
-OpenModelDB under CC-BY-4.0) are being evaluated. If any is added, this file will credit the author,
-link the source and state that the file was converted.
 
 ## Real-ESRGAN license (BSD-3-Clause)
 
